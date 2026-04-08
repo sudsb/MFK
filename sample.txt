@@ -1,0 +1,2 @@
+Hello from sample.txt!
+This demonstrates feature2 reading a file and sending output through feature1.

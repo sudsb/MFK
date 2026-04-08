@@ -1,0 +1,20 @@
+{
+  "components": [
+    {
+      "name": "reader",
+      "class": "features.file_reader.FileReader",
+      "params": { "path": "sample.txt", "output_key": "file_content" },
+      "subscribes": ["file.read"],
+      "publishes": ["data.loaded"]
+    },
+    {
+      "name": "printer",
+      "class": "features.printer.ConsolePrinter",
+      "params": { "input_key": "file_content" },
+      "subscribes": ["data.loaded"]
+    }
+  ],
+  "bus": {
+    "default_channel": "highspeed"
+  }
+}

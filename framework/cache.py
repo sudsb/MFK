@@ -1,4 +1,5 @@
 from __future__ import annotations
+import collections
 import hashlib
 import json
 import threading
@@ -19,7 +20,9 @@ class ParamCache:
     def __init__(self, ttl: Optional[float] = None, max_size: int = 1000) -> None:
         self._ttl = ttl
         self._max_size = max_size
-        self._cache: Dict[str, Tuple[Any, float]] = {}
+        self._cache: collections.OrderedDict[str, Tuple[Any, float]] = (
+            collections.OrderedDict()
+        )
         self._lock = threading.Lock()
         self._hits: int = 0
         self._misses: int = 0
@@ -36,15 +39,17 @@ class ParamCache:
                 del self._cache[key]
                 self._misses += 1
                 return None
+            self._cache.move_to_end(key)
             self._hits += 1
             return result
 
     def set(self, params: Dict[str, Any], result: Any) -> None:
         key = self._make_key(params)
         with self._lock:
-            if len(self._cache) >= self._max_size and key not in self._cache:
-                oldest_key = min(self._cache, key=lambda k: self._cache[k][1])
-                del self._cache[oldest_key]
+            if key in self._cache:
+                self._cache.move_to_end(key)
+            elif len(self._cache) >= self._max_size:
+                oldest_key, _ = self._cache.popitem(last=False)
                 log.debug("ParamCache: evicted oldest entry '%s'", oldest_key[:16])
             self._cache[key] = (result, time.time())
 

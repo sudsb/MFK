@@ -55,11 +55,13 @@ class ComponentRegistry:
     def unregister(self, name: str) -> None:
         """Unregister and cleanup a component."""
         component = self._components.pop(name, None)
-        if component and getattr(component, "is_running", False):
+        # Use detach_bus so the framework-run lifecycle is honored
+        # (detach_bus calls on_stop and clears the bus reference).
+        if component and hasattr(component, "detach_bus"):
             try:
-                component.on_stop()
+                component.detach_bus()
             except Exception:
-                log.exception("Error stopping component '%s'", name)
+                log.exception("Error detaching component '%s'", name)
 
     def clear(self) -> None:
         """Remove all components."""

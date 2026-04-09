@@ -4,12 +4,17 @@ from __future__ import annotations
 
 import multiprocessing
 import queue
-from typing import Optional
+from typing import Optional, Any
+
+import logging
 
 from framework.channels.base import Channel, ChannelType, Message
 
-# Sentinel object to signal channel closure
-_CLOSED_SENTINEL = object()
+log = logging.getLogger(__name__)
+
+# Picklable sentinel to signal channel closure. Use a unique bytes marker so it
+# can safely be sent through multiprocessing.Queue.
+_CLOSED_SENTINEL = b"__CHANNEL_CLOSED_V1__"
 
 
 class NormalChannel(Channel):
@@ -36,18 +41,60 @@ class NormalChannel(Channel):
         self._maxsize = maxsize
         self._closed = False
 
+        # Use Any annotation to avoid strict generic type issues with typing
         if cross_process:
-            self._queue: queue.Queue[object] | multiprocessing.Queue = (
-                multiprocessing.Queue(maxsize=maxsize)
-            )
+            self._queue: Any = multiprocessing.Queue(maxsize=maxsize)
         else:
-            self._queue: queue.Queue[object] | multiprocessing.Queue = queue.Queue(
-                maxsize=maxsize
-            )
+            self._queue: Any = queue.Queue(maxsize=maxsize)
 
     @property
     def channel_type(self) -> ChannelType:
         return ChannelType.NORMAL
+
+    def close(self) -> None:
+        """Mark the channel closed and notify receivers.
+
+        For cross-process queues we put a picklable sentinel value so child
+        processes or other process consumers can observe closure. For
+        in-process queues we do the same for uniformity.
+        """
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            # Put sentinel; use non-blocking put to avoid deadlocks during shutdown
+            # If queue is full, use put with timeout as a best-effort.
+            try:
+                self._queue.put(_CLOSED_SENTINEL, block=False)
+            except Exception:
+                # fallback: try a short blocking put
+                self._queue.put(_CLOSED_SENTINEL, block=True, timeout=0.1)
+        except Exception:
+            # Ignore failures on close; channel is logically closed regardless
+            pass
+
+    def recv(self, timeout: float | None = None) -> Any:
+        """Receive next message from the channel.
+
+        Returns the payload or raises queue.Empty on timeout/empty.
+        If the channel is closed and sentinel observed, raise EOFError.
+        """
+        try:
+            if timeout is None:
+                item = self._queue.get()
+            else:
+                item = self._queue.get(timeout=timeout)
+        except Exception:
+            # Re-raise queue.Empty and other queue exceptions
+            raise
+
+        # Detect sentinel; sentinel is picklable bytes
+        if item is _CLOSED_SENTINEL:
+            # ensure subsequent calls know the channel is closed
+            self._closed = True
+            raise EOFError("Channel closed")
+
+        return item
 
     @property
     def size(self) -> int:
@@ -77,9 +124,6 @@ class NormalChannel(Channel):
         Returns None if the channel is closed, empty with timeout=0,
         or timeout expires while waiting.
         """
-        if self._closed and self._queue.empty():
-            return None
-
         try:
             if timeout is None:
                 item = self._queue.get()
@@ -88,6 +132,20 @@ class NormalChannel(Channel):
             else:
                 item = self._queue.get(timeout=timeout)
         except queue.Empty:
+            return None
+        except (EOFError, OSError):
+            # Multiprocessing queues may raise EOFError/OSError on closed pipes
+            # Log and treat as empty/closed channel
+            try:
+                log.exception("NormalChannel.recv: queue read error for %s", self._name)
+            except Exception:
+                pass
+            return None
+        except Exception:
+            try:
+                log.exception("NormalChannel.recv: unexpected error for %s", self._name)
+            except Exception:
+                pass
             return None
 
         if item is _CLOSED_SENTINEL:
@@ -108,3 +166,10 @@ class NormalChannel(Channel):
             self._queue.put_nowait(_CLOSED_SENTINEL)
         except queue.Full:
             pass
+        except Exception:
+            try:
+                log.exception(
+                    "NormalChannel.close: failed to insert sentinel for %s", self._name
+                )
+            except Exception:
+                pass

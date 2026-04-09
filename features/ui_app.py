@@ -37,8 +37,12 @@ class UIApp:
 
         # Screen frames
         self.current_frame: Optional[tk.Frame] = None
-        self.screen1_frame = self._create_screen1_frame()
-        self.screen2_frame = self._create_screen2_frame()
+        self.screen1_text, self.screen1_frame = self._create_screen_frame(
+            "1", SCREEN1_FILE, "ui.navigate_to_screen2", self._show_screen2
+        )
+        self.screen2_text, self.screen2_frame = self._create_screen_frame(
+            "2", SCREEN2_FILE, "ui.navigate_to_screen1", self._show_screen1
+        )
 
         # Subscribe to bus messages for cross-screen communication
         # Wrap handlers in root.after() to marshal Tkinter calls to the main thread
@@ -60,77 +64,81 @@ class UIApp:
                 lambda m: self.root.after(0, lambda: self._on_screen2_message(m)),
             )
 
-    def _create_screen1_frame(self) -> tk.Frame:
+    def _create_screen_frame(
+        self, screen_id: str, file_path: str, navigate_topic: str, show_target: Any
+    ) -> tuple[tk.Text, tk.Frame]:
         frame = ttk.Frame(self.root, padding=20)
+        ttk.Label(frame, text=f"屏幕 {screen_id}", style="Header.TLabel").pack(
+            pady=(0, 15)
+        )
 
-        # Header
-        ttk.Label(frame, text="屏幕 1", style="Header.TLabel").pack(pady=(0, 15))
-
-        # Display area
         display_frame = ttk.LabelFrame(frame, text="内容显示", padding=10)
         display_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 15))
 
-        self.screen1_text = tk.Text(
+        text_widget = tk.Text(
             display_frame, wrap=tk.WORD, height=12, font=("Microsoft YaHei", 10)
         )
-        self.screen1_scroll = ttk.Scrollbar(
-            display_frame, orient=tk.VERTICAL, command=self.screen1_text.yview
+        scroll = ttk.Scrollbar(
+            display_frame, orient=tk.VERTICAL, command=text_widget.yview
         )
-        self.screen1_text.configure(yscrollcommand=self.screen1_scroll.set)
-        self.screen1_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self.screen1_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        text_widget.configure(yscrollcommand=scroll.set)
+        text_widget.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scroll.pack(side=tk.RIGHT, fill=tk.Y)
 
-        # Button area
         btn_frame = ttk.Frame(frame)
         btn_frame.pack(fill=tk.X)
 
-        ttk.Button(btn_frame, text="随机生成文本", command=self._screen1_btn1).pack(
-            side=tk.LEFT, padx=2, expand=True
-        )
-        ttk.Button(btn_frame, text="跳转屏幕2", command=self._screen1_btn2).pack(
-            side=tk.LEFT, padx=2, expand=True
-        )
-        ttk.Button(btn_frame, text="读取本地文件", command=self._screen1_btn3).pack(
-            side=tk.LEFT, padx=2, expand=True
-        )
+        words_map = {
+            "1": [
+                "数据",
+                "信息",
+                "消息",
+                "内容",
+                "通信",
+                "框架",
+                "组件",
+                "通道",
+                "缓存",
+                "快照",
+            ],
+            "2": [
+                "高速",
+                "通道",
+                "零拷贝",
+                "环形缓冲",
+                "消息总线",
+                "发布订阅",
+                "实例池",
+                "缓存命中",
+                "状态快照",
+                "中断恢复",
+            ],
+        }
 
-        return frame
+        ttk.Button(
+            btn_frame,
+            text="随机生成文本",
+            command=lambda: self._screen_btn1(
+                screen_id, file_path, text_widget, words_map[screen_id]
+            ),
+        ).pack(side=tk.LEFT, padx=2, expand=True)
 
-    def _create_screen2_frame(self) -> tk.Frame:
-        frame = ttk.Frame(self.root, padding=20)
+        target_id = "2" if screen_id == "1" else "1"
+        ttk.Button(
+            btn_frame,
+            text=f"跳转屏幕{target_id}",
+            command=lambda: self._screen_btn2(
+                screen_id, target_id, navigate_topic, show_target
+            ),
+        ).pack(side=tk.LEFT, padx=2, expand=True)
 
-        # Header
-        ttk.Label(frame, text="屏幕 2", style="Header.TLabel").pack(pady=(0, 15))
+        ttk.Button(
+            btn_frame,
+            text="读取本地文件",
+            command=lambda: self._screen_btn3(file_path, text_widget),
+        ).pack(side=tk.LEFT, padx=2, expand=True)
 
-        # Display area
-        display_frame = ttk.LabelFrame(frame, text="内容显示", padding=10)
-        display_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 15))
-
-        self.screen2_text = tk.Text(
-            display_frame, wrap=tk.WORD, height=12, font=("Microsoft YaHei", 10)
-        )
-        self.screen2_scroll = ttk.Scrollbar(
-            display_frame, orient=tk.VERTICAL, command=self.screen2_text.yview
-        )
-        self.screen2_text.configure(yscrollcommand=self.screen2_scroll.set)
-        self.screen2_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self.screen2_scroll.pack(side=tk.RIGHT, fill=tk.Y)
-
-        # Button area
-        btn_frame = ttk.Frame(frame)
-        btn_frame.pack(fill=tk.X)
-
-        ttk.Button(btn_frame, text="随机生成文本", command=self._screen2_btn1).pack(
-            side=tk.LEFT, padx=2, expand=True
-        )
-        ttk.Button(btn_frame, text="跳转屏幕1", command=self._screen2_btn2).pack(
-            side=tk.LEFT, padx=2, expand=True
-        )
-        ttk.Button(btn_frame, text="读取本地文件", command=self._screen2_btn3).pack(
-            side=tk.LEFT, padx=2, expand=True
-        )
-
-        return frame
+        return text_widget, frame
 
     def _show_screen1(self) -> None:
         if self.current_frame:
@@ -146,113 +154,68 @@ class UIApp:
         self.current_frame.pack(fill=tk.BOTH, expand=True)
         self.root.title("框架UI演示 - 屏幕2")
 
-    # --- Screen 1 button handlers ---
-    def _screen1_btn1(self) -> None:
-        """Generate random text, write to screen1 file."""
-        words = [
-            "数据",
-            "信息",
-            "消息",
-            "内容",
-            "通信",
-            "框架",
-            "组件",
-            "通道",
-            "缓存",
-            "快照",
-        ]
-        text = f"【屏幕1-随机生成】{time.strftime('%H:%M:%S')}\n"
+    # --- Generic button handlers ---
+    def _screen_btn1(
+        self, screen_id: str, file_path: str, text_widget: tk.Text, words: list[str]
+    ) -> None:
+        """Generate random text, write to screen file."""
+        text = f"【屏幕{screen_id}-随机生成】{time.strftime('%H:%M:%S')}\n"
         text += "".join(random.choices(words, k=random.randint(8, 20))) + "\n\n"
         text += f"生成时间: {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
         text += f"数据长度: {len(text)} 字符"
 
-        with open(SCREEN1_FILE, "w", encoding="utf-8") as f:
-            f.write(text)
+        try:
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(text)
+        except OSError:
+            log.exception("UIApp: failed to write %s", file_path)
+            text_widget.delete(1.0, tk.END)
+            text_widget.insert(tk.END, "写入失败，请检查磁盘/权限。")
+            self._set_text_color(text_widget, "#D32F2F")
+            return
 
-        self.screen1_text.delete(1.0, tk.END)
-        self.screen1_text.insert(tk.END, text)
-        self._set_text_color(self.screen1_text, "#2E7D32")
+        text_widget.delete(1.0, tk.END)
+        text_widget.insert(tk.END, text)
+        self._set_text_color(text_widget, "#2E7D32")
 
-    def _screen1_btn2(self) -> None:
-        """Navigate to screen 2 and pass message via bus."""
-        msg = f"来自屏幕1的消息 [{time.strftime('%H:%M:%S')}]: 我跳转到这里了！"
+    def _screen_btn2(
+        self, source_id: str, target_id: str, navigate_topic: str, show_target: Any
+    ) -> None:
+        """Navigate to target screen and pass message via bus."""
+        msg = (
+            f"来自屏幕{source_id}的消息 [{time.strftime('%H:%M:%S')}]: 我跳转到这里了！"
+        )
 
         if self.bus:
             self.bus.publish(
-                "ui.navigate_to_screen2",
-                payload={"message": msg, "source": "screen1"},
-                sender="screen1",
+                navigate_topic,
+                payload={"message": msg, "source": f"screen{source_id}"},
+                sender=f"screen{source_id}",
             )
         else:
-            self._show_screen2()
-            self._append_screen2(f"总线未连接，直接跳转\n\n{msg}")
-
-    def _screen1_btn3(self) -> None:
-        """Read screen1 file and display."""
-        try:
-            with open(SCREEN1_FILE, "r", encoding="utf-8") as f:
-                content = f.read()
-            self.screen1_text.delete(1.0, tk.END)
-            self.screen1_text.insert(tk.END, content)
-            self._set_text_color(self.screen1_text, "#1565C0")
-        except FileNotFoundError:
-            self.screen1_text.delete(1.0, tk.END)
-            self.screen1_text.insert(tk.END, "本地文件不存在，请先生成文本。")
-            self._set_text_color(self.screen1_text, "#757575")
-
-    # --- Screen 2 button handlers ---
-    def _screen2_btn1(self) -> None:
-        """Generate random text, write to screen2 file."""
-        words = [
-            "高速",
-            "通道",
-            "零拷贝",
-            "环形缓冲",
-            "消息总线",
-            "发布订阅",
-            "实例池",
-            "缓存命中",
-            "状态快照",
-            "中断恢复",
-        ]
-        text = f"【屏幕2-随机生成】{time.strftime('%H:%M:%S')}\n"
-        text += "".join(random.choices(words, k=random.randint(8, 20))) + "\n\n"
-        text += f"生成时间: {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
-        text += f"数据长度: {len(text)} 字符"
-
-        with open(SCREEN2_FILE, "w", encoding="utf-8") as f:
-            f.write(text)
-
-        self.screen2_text.delete(1.0, tk.END)
-        self.screen2_text.insert(tk.END, text)
-        self._set_text_color(self.screen2_text, "#2E7D32")
-
-    def _screen2_btn2(self) -> None:
-        """Navigate to screen 1 and pass message via bus."""
-        msg = f"来自屏幕2的消息 [{time.strftime('%H:%M:%S')}]: 我跳转到这里了！"
-
-        if self.bus:
-            self.bus.publish(
-                "ui.navigate_to_screen1",
-                payload={"message": msg, "source": "screen2"},
-                sender="screen2",
+            show_target()
+            target_append = (
+                self._append_screen2 if target_id == "2" else self._append_screen1
             )
-        else:
-            self._show_screen1()
-            self._append_screen1(f"总线未连接，直接跳转\n\n{msg}")
+            target_append(f"总线未连接，直接跳转\n\n{msg}")
 
-    def _screen2_btn3(self) -> None:
-        """Read screen2 file and display."""
+    def _screen_btn3(self, file_path: str, text_widget: tk.Text) -> None:
+        """Read screen file and display."""
         try:
-            with open(SCREEN2_FILE, "r", encoding="utf-8") as f:
+            with open(file_path, "r", encoding="utf-8") as f:
                 content = f.read()
-            self.screen2_text.delete(1.0, tk.END)
-            self.screen2_text.insert(tk.END, content)
-            self._set_text_color(self.screen2_text, "#1565C0")
+            text_widget.delete(1.0, tk.END)
+            text_widget.insert(tk.END, content)
+            self._set_text_color(text_widget, "#1565C0")
         except FileNotFoundError:
-            self.screen2_text.delete(1.0, tk.END)
-            self.screen2_text.insert(tk.END, "本地文件不存在，请先生成文本。")
-            self._set_text_color(self.screen2_text, "#757575")
+            text_widget.delete(1.0, tk.END)
+            text_widget.insert(tk.END, "本地文件不存在，请先生成文本。")
+            self._set_text_color(text_widget, "#757575")
+        except OSError:
+            log.exception("UIApp: failed to read %s", file_path)
+            text_widget.delete(1.0, tk.END)
+            text_widget.insert(tk.END, "读取失败，请检查磁盘/权限。")
+            self._set_text_color(text_widget, "#D32F2F")
 
     # --- Bus message handlers ---
     def _on_navigate_screen1(self, message: Message) -> Any:

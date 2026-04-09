@@ -132,10 +132,6 @@ def main():
             bus.register_component(comp)
             components.append(comp)
 
-    # 启动生命周期
-    for comp in components:
-        comp.on_start()
-
     # 触发第一个组件
     bus.publish("file.read", payload={"trigger": True}, sender="main")
 
@@ -393,15 +389,15 @@ def __init__(
 
 关闭总线、投递后端及所有通道。
 
-行为：
-1. 关闭所有通道（调用 `channel.close()`）
-2. 清空通道和订阅者字典
-3. 断开所有组件（调用 `detach_bus()`）
-4. 清空组件字典
-5. **根据投递后端清理资源**：
-   - `"thread"` 模式：关闭 `ThreadPoolExecutor`，等待所有任务完成
-   - `"process"` 模式：终止 `multiprocessing.Pool`，回收子进程
-   - `"asyncio"` 模式：停止事件循环，关闭 loop 线程
+**关闭顺序**（确保组件能在总线可用时清理订阅）：
+1. **先分离组件**：对所有已注册组件调用 `detach_bus()`（触发 `on_stop` 并清空总线引用）
+2. **关闭投递后端**：等待正在执行的处理器完成
+3. **清理通道和订阅**：关闭所有通道，清空订阅者字典
+
+各后端清理行为：
+- `"thread"` 模式：关闭 `ThreadPoolExecutor`，等待所有任务完成
+- `"process"` 模式：先尝试 `close()` + `join()` 优雅关闭，失败则 `terminate()` 强制终止
+- `"asyncio"` 模式：取消所有 pending 任务，等待 100ms 后停止事件循环，关闭 loop 线程
 
 所有异常被捕获并记录日志，不会抛出。
 
@@ -650,7 +646,13 @@ def __init__(self) -> None
 #### 构造方法
 
 ```python
-def __init__(self, factory: Callable[[], Any], max_size: int = 10, name: str = "default") -> None
+def __init__(
+    self,
+    factory: Callable[[], Any],
+    max_size: int = 10,
+    name: str = "default",
+    teardown: Callable[[Any], None] | None = None,
+) -> None
 ```
 
 | 参数 | 类型 | 默认值 | 说明 |
@@ -658,6 +660,7 @@ def __init__(self, factory: Callable[[], Any], max_size: int = 10, name: str = "
 | `factory` | `Callable[[], Any]` | — | 创建新实例的工厂函数（无参数） |
 | `max_size` | `int` | `10` | 池中可保留的最大空闲实例数 |
 | `name` | `str` | `"default"` | 池名称（用于日志标识） |
+| `teardown` | `Optional[Callable[[Any], None]]` | `None` | 自定义清理回调，实例被丢弃时调用 |
 
 #### 属性
 
@@ -668,15 +671,20 @@ def __init__(self, factory: Callable[[], Any], max_size: int = 10, name: str = "
 
 #### 方法
 
-##### `acquire() -> Any`
+##### `acquire(timeout=None) -> Any`
 
 从池中获取一个实例。
 
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `timeout` | `Optional[float]` | `None` | 超时秒数，无可用实例且达上限时等待此时间，超时抛出 `TimeoutError` |
+
 行为：
 - 优先返回池中已有的空闲实例
-- 池为空时调用 `factory()` 创建新实例
+- 池为空且未达 `max_size` 时调用 `factory()` 创建新实例
+- 池已满且无空闲实例时，阻塞等待 `timeout` 秒，超时抛出 `TimeoutError`
 - `_in_use` 计数器 +1
-- 线程安全（使用 `_lock`）
+- 线程安全（使用 `RLock` + `Condition`，避免死锁）
 
 ##### `release(instance) -> None`
 
@@ -689,7 +697,10 @@ def __init__(self, factory: Callable[[], Any], max_size: int = 10, name: str = "
 行为：
 - `_in_use` 计数器 -1
 - 若池中空闲数未达 `max_size`，将实例放回池中
-- 若池已满，丢弃实例并记录 debug 日志
+- 若池已满，丢弃实例并尝试清理：
+  1. 调用 `teardown` 回调（若提供）
+  2. 否则调用实例的 `close()` 或 `shutdown()` 方法（若存在）
+  3. 清理异常被记录日志，不影响其他操作
 - 线程安全
 
 ##### `shrink(target_size=0) -> int`
@@ -1004,18 +1015,16 @@ class Counter(BaseComponent):
     def on_start(self) -> None:
         self._count = 0
         # 订阅 start 信号
-        if self._bus:
-            self._bus.subscribe("counter.start", self.handle_message)
+        self._bus.subscribe("counter.start", self.handle_message)
 
     def handle_message(self, message: Message) -> Any:
         self._count += 1
         # 发布计数值
-        if self._bus:
-            self._bus.publish(
-                "counter.value",
-                payload={"count": self._count},
-                sender=self.name,
-            )
+        self._bus.publish(
+            "counter.value",
+            payload={"count": self._count},
+            sender=self.name,
+        )
         return self._count
 
 
@@ -1025,8 +1034,7 @@ class Logger(BaseComponent):
     name = "logger"
 
     def on_start(self) -> None:
-        if self._bus:
-            self._bus.subscribe("counter.value", self.handle_message)
+        self._bus.subscribe("counter.value", self.handle_message)
 
     def handle_message(self, message: Message) -> Any:
         print(f"[Logger] 收到计数: {message.payload}")
@@ -1044,8 +1052,6 @@ def main():
     bus.register_component(logger)
 
     # 启动
-    counter.on_start()
-    logger.on_start()
 
     # 触发计数器
     for _ in range(3):
@@ -1089,8 +1095,7 @@ class ExpensiveWorker(BaseComponent):
         self.cache = ParamCache(ttl=60.0, max_size=100)
 
     def on_start(self) -> None:
-        if self._bus:
-            self._bus.subscribe("compute.request", self.handle_message)
+        self._bus.subscribe("compute.request", self.handle_message)
 
     def handle_message(self, message: Message) -> Any:
         params = message.payload if isinstance(message.payload, dict) else {}
@@ -1130,8 +1135,6 @@ def main():
     bus = MessageBus()
     bus.register_component(worker1)
     bus.register_component(worker2)
-    worker1.on_start()
-    worker2.on_start()
 
     # 发布计算请求（相同参数，第二次命中缓存）
     bus.publish("compute.request", payload={"n": 100}, sender="main")
@@ -1267,19 +1270,17 @@ class SensorReader(BaseComponent):
     name = "sensor_reader"
 
     def on_start(self) -> None:
-        if self._bus:
-            self._bus.subscribe("sensor.start", self.handle_message)
+        self._bus.subscribe("sensor.start", self.handle_message)
 
     def handle_message(self, message: Message) -> Any:
         # 模拟传感器数据（小负载，适合高速通道）
         data = {"temperature": 23.5, "humidity": 65.0}
-        if self._bus:
-            self._bus.publish(
-                "sensor.data",
-                payload=data,
-                sender=self.name,
-                channel_type=ChannelType.HIGH_SPEED,  # 指定高速通道
-            )
+        self._bus.publish(
+            "sensor.data",
+            payload=data,
+            sender=self.name,
+            channel_type=ChannelType.HIGH_SPEED,  # 指定高速通道
+        )
         return data
 
 
@@ -1289,8 +1290,7 @@ class AlertSystem(BaseComponent):
     name = "alert_system"
 
     def on_start(self) -> None:
-        if self._bus:
-            self._bus.subscribe("sensor.data", self.handle_message)
+        self._bus.subscribe("sensor.data", self.handle_message)
 
     def handle_message(self, message: Message) -> Any:
         data = message.payload
@@ -1298,13 +1298,12 @@ class AlertSystem(BaseComponent):
             temp = data.get("temperature", 0)
             if temp > 30:
                 print(f"[Alert] 温度过高: {temp}")
-                if self._bus:
-                    self._bus.publish(
-                        "alert.triggered",
-                        payload={"type": "high_temp", "value": temp},
-                        sender=self.name,
-                        channel_type=ChannelType.NORMAL,  # 告警使用普通通道（可靠性优先）
-                    )
+                self._bus.publish(
+                    "alert.triggered",
+                    payload={"type": "high_temp", "value": temp},
+                    sender=self.name,
+                    channel_type=ChannelType.NORMAL,  # 告警使用普通通道（可靠性优先）
+                )
         return {"checked": True}
 
 
@@ -1314,8 +1313,7 @@ class FileLogger(BaseComponent):
     name = "file_logger"
 
     def on_start(self) -> None:
-        if self._bus:
-            self._bus.subscribe("alert.triggered", self.handle_message)
+        self._bus.subscribe("alert.triggered", self.handle_message)
 
     def handle_message(self, message: Message) -> Any:
         payload = message.payload
@@ -1338,9 +1336,6 @@ def main():
     bus.register_component(alert)
     bus.register_component(logger)
 
-    sensor.on_start()
-    alert.on_start()
-    logger.on_start()
 
     # 触发传感器读取
     bus.publish("sensor.start", payload={"mode": "continuous"}, sender="main")
@@ -1415,10 +1410,9 @@ class FileProcessor(BaseComponent):
         if self.cache_enabled:
             self._cache = ParamCache(ttl=300.0, max_size=500)
 
-        if self._bus:
-            self._bus.subscribe("process.file", self.handle_message)
-            log.info("[%s] 已启动, input_dir=%s, transform=%s",
-                     self.name, self.input_dir, self.transform)
+        self._bus.subscribe("process.file", self.handle_message)
+        log.info("[%s] 已启动, input_dir=%s, transform=%s",
+                 self.name, self.input_dir, self.transform)
 
     def on_stop(self) -> None:
         """组件停止时：输出统计信息。"""
@@ -1489,12 +1483,11 @@ class FileProcessor(BaseComponent):
 
     def _publish_result(self, result: Dict[str, Any], filename: str) -> None:
         """发布处理结果到总线。"""
-        if self._bus:
-            self._bus.publish(
-                "process.result",
-                payload={**result, "filename": filename},
-                sender=self.name,
-            )
+        self._bus.publish(
+            "process.result",
+            payload={**result, "filename": filename},
+            sender=self.name,
+        )
 
     def get_stats(self) -> Dict[str, int]:
         """获取组件统计信息。"""
@@ -1529,7 +1522,6 @@ def main():
     )
 
     bus.register_component(processor)
-    processor.on_start()
 
     # 第一次处理（缓存未命中）
     bus.publish(
@@ -1554,7 +1546,6 @@ def main():
         cache_enabled=True,
     )
     bus.register_component(processor2)
-    processor2.on_start()
 
     bus.publish(
         "process.file",
@@ -1692,9 +1683,12 @@ if __name__ == "__main__":
 2. **三投递后端** — thread / process / asyncio 可根据场景切换，一个总线覆盖所有并发模型
 3. **双通道架构** — HighSpeedChannel（mmap 环形缓冲区，μs 级）+ NormalChannel（queue，支持跨进程），按需选择
 4. **组件完全解耦** — 发布/订阅模型，组件不知道彼此的存在，框架也不知道哪些组件会接入
-5. **性能层内置** — ObjectPool（实例复用）、ParamCache（同参缓存）、SnapshotManager（中断恢复）开箱即用
+5. **性能层内置** — ObjectPool（实例复用，支持 teardown）、ParamCache（同参缓存，O(1) LRU）、SnapshotManager（中断恢复）开箱即用
 6. **动态组件加载** — 通过 `importlib` 从配置字符串路径动态实例化，无需硬编码
 7. **线程安全设计** — 所有共享状态有锁保护，UI 调用通过 `after()` 编组到主线程
+8. **健壮的错误处理** — 全面的异常捕获和日志记录，单个处理器异常不影响其他处理器
+9. **自动化生命周期管理** — 组件注册/注销时自动调用 `attach_bus`/`detach_bus`，确保资源正确清理
+10. **进程模式组件缓存** — 子进程中使用 LRU 缓存复用组件实例，避免重复实例化开销
 
 ### 局限性
 
@@ -1713,14 +1707,18 @@ if __name__ == "__main__":
 | **外部依赖** | 无（stdlib） | pyzmq | pika + RabbitMQ 服务 | redis-py + Redis 服务 | celery + broker |
 | **部署复杂度** | 零配置 | 安装 C 库 | 需运行消息代理 | 需运行 Redis | 需运行 broker |
 | **通信模型** | pub/sub | pub/sub + REQ/REP | AMQP 队列 | pub/sub | 任务队列 |
-| **进程间通信** | NormalChannel | ✅（原生） | ✅（网络） | ✅（网络） | ✅（网络） |
+| **进程间通信** | NormalChannel（multiprocessing.Queue） | ✅（原生） | ✅（网络） | ✅（网络） | ✅（网络） |
 | **低延迟通道** | mmap 环形缓冲区 | inproc IPC | ❌ | ❌ | ❌ |
-| **投递后端** | thread/process/asyncio | IOLoop | 同步/异步/Tornado | 同步/asyncio | 多 worker |
-| **组件动态发现** | ✅（importlib） | ❌ | ❌ | ❌ | ✅（自动发现） |
-| **对象池** | ✅ 内置 | ❌ | ❌ | ❌ | ❌ |
-| **参数缓存** | ✅ 内置 | ❌ | ❌ | ❌ | ✅（backend cache） |
-| **状态快照** | ✅ 内置 | ❌ | ❌ | ❌ | ❌ |
+| **投递后端** | thread / process / asyncio（策略模式） | IOLoop | 同步/异步/Tornado | 同步/asyncio | 多 worker |
+| **组件动态发现** | ✅（importlib + ComponentRegistry） | ❌ | ❌ | ❌ | ✅（自动发现） |
+| **对象池** | ✅ 内置（teardown 支持，超时获取） | ❌ | ❌ | ❌ | ❌ |
+| **参数缓存** | ✅ 内置（O(1) LRU + TTL） | ❌ | ❌ | ❌ | ✅（backend cache） |
+| **状态快照** | ✅ 内置（磁盘持久化） | ❌ | ❌ | ❌ | ❌ |
 | **消息持久化** | ❌（仅磁盘快照） | ❌ | ✅（持久化队列） | ❌ | ✅（结果后端） |
+| **错误处理** | ✅ 全面异常捕获 + 日志记录 | ✅ | ✅ | ⚠️（fire-and-forget） | ✅（重试 + 死信队列） |
+| **生命周期管理** | ✅ 自动化（attach/detach bus） | ❌ | ❌ | ❌ | ✅（worker 生命周期） |
+| **进程模式组件缓存** | ✅ LRU 缓存复用实例 | ❌ | ❌ | ❌ | ❌ |
+| **UI 集成** | ✅ Tkinter 线程安全编组 | ❌ | ❌ | ❌ | ❌ |
 | **适用场景** | 单机组件通信，快速原型，教学 | 分布式系统，高性能网络通信 | 企业级消息队列，微服务 | 轻量级事件通知，缓存失效 | 分布式任务调度 |
 
 **何时选择本框架**：
@@ -1735,3 +1733,4 @@ if __name__ == "__main__":
 - 需要消息保证投递 → RabbitMQ
 - 大规模任务调度 → Celery
 - 需要持久化消息队列 → RabbitMQ / Redis Streams
+- 需要复杂的路由规则 → RabbitMQ（topic/fanout/headers exchange）

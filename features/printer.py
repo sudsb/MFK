@@ -1,7 +1,10 @@
 from __future__ import annotations
 from typing import Any
+import logging
 from framework.interfaces import BaseComponent
 from framework.channels.base import Message
+
+log = logging.getLogger(__name__)
 
 
 class ConsolePrinter(BaseComponent):
@@ -21,15 +24,18 @@ class ConsolePrinter(BaseComponent):
 
     def on_start(self) -> None:
         """Subscribe to data.loaded topic."""
-        if self._bus:
-            self._bus.subscribe("data.loaded", self.handle_message)
+        self._bus.subscribe("data.loaded", self.handle_message)
 
     def handle_message(self, message: Message) -> Any:
         """Print the payload content."""
-        if isinstance(message.payload, dict):
-            value = message.payload.get(self.input_key, "")
-        else:
-            value = str(message.payload)
+        try:
+            if isinstance(message.payload, dict):
+                value = message.payload.get(self.input_key, "")
+            else:
+                value = str(message.payload)
 
-        print(value)
-        return {"printed": value}
+            print(value)
+            return {"printed": value}
+        except Exception:
+            log.exception("ConsolePrinter: failed to handle message")
+            return {"error": "print failed"}

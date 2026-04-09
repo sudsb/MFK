@@ -14,9 +14,8 @@ class Screen1(BaseComponent):
     name: str = "screen1"
 
     def on_start(self) -> None:
-        if self._bus:
-            self._bus.subscribe("ui.navigate_to_screen1", self.handle_message)
-            self._bus.subscribe("ui.screen1_data", self.handle_message)
+        self._bus.subscribe("ui.navigate_to_screen1", self.handle_message)
+        self._bus.subscribe("ui.screen1_data", self.handle_message)
 
     def handle_message(self, message: Message) -> Any:
         return {"received": message.topic, "payload": message.payload}

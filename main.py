@@ -20,10 +20,6 @@ def main() -> None:
     bus.register_component(screen1)
     bus.register_component(screen2)
 
-    # Start component lifecycle
-    screen1.on_start()
-    screen2.on_start()
-
     # Launch UI application (bus is shared for cross-screen communication)
     app = UIApp(bus=bus)
     app.run()

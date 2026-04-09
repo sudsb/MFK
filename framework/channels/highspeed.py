@@ -46,7 +46,11 @@ class HighSpeedChannel(Channel):
 
         total_size = _HEADER_SIZE + (slot_count * slot_size)
         # Anonymous mmap: works on Windows with mmap.ACCESS_DEFAULT
-        self._mmap = mmap.mmap(-1, total_size)
+        try:
+            self._mmap = mmap.mmap(-1, total_size)
+        except Exception:
+            logger.exception("HighSpeedChannel: mmap allocation failed for %s", name)
+            raise
 
         # Initialize head and tail to 0 (single-threaded init, lock not needed)
         self._write_uint32(0, 0)  # head at offset 0
@@ -99,13 +103,19 @@ class HighSpeedChannel(Channel):
 
             slot_offset = _HEADER_SIZE + (head * self._slot_size)
 
-            # Write payload length (4 bytes)
-            struct.pack_into(_UINT32_FMT, self._mmap, slot_offset, len(payload))
-            # Write payload data
-            self._mmap[slot_offset + 4 : slot_offset + 4 + len(payload)] = payload
-
-            # Advance head
-            self._write_uint32(0, next_head)
+            # Write payload length (4 bytes) and payload atomically under lock
+            try:
+                struct.pack_into(_UINT32_FMT, self._mmap, slot_offset, len(payload))
+                self._mmap[slot_offset + 4 : slot_offset + 4 + len(payload)] = payload
+                # Advance head only after successful write
+                self._write_uint32(0, next_head)
+            except Exception:
+                logger.exception(
+                    "HighSpeedChannel: write failed to slot %d for channel %s",
+                    head,
+                    self._name,
+                )
+                return False
 
         return True
 
@@ -129,8 +139,16 @@ class HighSpeedChannel(Channel):
 
             slot_offset = _HEADER_SIZE + (tail * self._slot_size)
 
-            # Read payload length
-            length = struct.unpack_from(_UINT32_FMT, self._mmap, slot_offset)[0]
+            # Read payload length and data with defensive error handling
+            try:
+                length = struct.unpack_from(_UINT32_FMT, self._mmap, slot_offset)[0]
+            except Exception:
+                logger.exception(
+                    "HighSpeedChannel: failed to read slot header at tail %d for %s",
+                    tail,
+                    self._name,
+                )
+                return None
 
             if length > self._data_size:
                 logger.warning(
@@ -140,14 +158,30 @@ class HighSpeedChannel(Channel):
                 )
                 return None
 
-            # Read payload data
-            payload_bytes = bytes(
-                self._mmap[slot_offset + 4 : slot_offset + 4 + length]
-            )
+            try:
+                payload_bytes = bytes(
+                    self._mmap[slot_offset + 4 : slot_offset + 4 + length]
+                )
+            except Exception:
+                logger.exception(
+                    "HighSpeedChannel: failed to read payload at tail %d for %s",
+                    tail,
+                    self._name,
+                )
+                return None
 
             # Advance tail
             new_tail = (tail + 1) % self._slot_count
-            self._write_uint32(4, new_tail)
+            try:
+                self._write_uint32(4, new_tail)
+            except Exception:
+                logger.exception(
+                    "HighSpeedChannel: failed to advance tail from %d to %d for %s",
+                    tail,
+                    new_tail,
+                    self._name,
+                )
+                return None
 
         try:
             return pickle.loads(payload_bytes)
@@ -163,7 +197,7 @@ class HighSpeedChannel(Channel):
         try:
             self._mmap.close()
         except Exception:
-            pass
+            logger.exception("HighSpeedChannel: error closing mmap for %s", self._name)
 
     def _read_uint32(self, offset: int) -> int:
         """Read a 4-byte unsigned integer from the mmap at the given offset.

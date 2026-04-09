@@ -1,7 +1,10 @@
 from __future__ import annotations
 from typing import Any, Dict
+import logging
 from framework.interfaces import BaseComponent
 from framework.channels.base import Message
+
+log = logging.getLogger(__name__)
 
 
 class FileReader(BaseComponent):
@@ -23,8 +26,7 @@ class FileReader(BaseComponent):
 
     def on_start(self) -> None:
         """Subscribe to file.read topic."""
-        if self._bus:
-            self._bus.subscribe("file.read", self.handle_message)
+        self._bus.subscribe("file.read", self.handle_message)
 
     def handle_message(self, message: Message) -> Any:
         """Read the file and return its content."""
@@ -33,6 +35,7 @@ class FileReader(BaseComponent):
                 content = f.read()
         except FileNotFoundError:
             error_msg = f"File not found: {self.path}"
+            log.warning("FileReader: %s", error_msg)
             if self._bus:
                 self._bus.publish(
                     "data.loaded",
@@ -42,6 +45,17 @@ class FileReader(BaseComponent):
             return {"error": error_msg}
         except OSError as e:
             error_msg = f"File read error: {self.path}: {e}"
+            log.exception("FileReader: IO error reading %s", self.path)
+            if self._bus:
+                self._bus.publish(
+                    "data.loaded",
+                    payload={"error": error_msg},
+                    sender=self.name,
+                )
+            return {"error": error_msg}
+        except Exception as e:
+            error_msg = f"Unexpected error reading {self.path}: {e}"
+            log.exception("FileReader: unexpected error reading %s", self.path)
             if self._bus:
                 self._bus.publish(
                     "data.loaded",

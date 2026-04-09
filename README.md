@@ -208,5 +208,4 @@ self._bus.publish("topic.name", payload={"key": "value"}, sender=self.name)
 
 ## 许可证
 
-MIT License</content>
-<filePath">D:\code-project\python\mfk\README.md
+MIT License

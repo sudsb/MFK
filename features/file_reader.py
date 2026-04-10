@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Any, Dict
+from typing import Any
 import logging
 from framework.interfaces import BaseComponent
 from framework.channels.base import Message

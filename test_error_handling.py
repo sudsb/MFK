@@ -184,7 +184,6 @@ class TestErrorHandling(unittest.TestCase):
                 raise RuntimeError("init fail")
 
         # register using this module's import path so importlib can find it
-        module_path = __name__ + ".Exploding"
         # ComponentRegistry expects a class path like 'module.ClassName'
         registry.register_class("boom", f"{__name__}.Exploding")
 

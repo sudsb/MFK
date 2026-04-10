@@ -73,29 +73,6 @@ class NormalChannel(Channel):
             # Ignore failures on close; channel is logically closed regardless
             pass
 
-    def recv(self, timeout: float | None = None) -> Any:
-        """Receive next message from the channel.
-
-        Returns the payload or raises queue.Empty on timeout/empty.
-        If the channel is closed and sentinel observed, raise EOFError.
-        """
-        try:
-            if timeout is None:
-                item = self._queue.get()
-            else:
-                item = self._queue.get(timeout=timeout)
-        except Exception:
-            # Re-raise queue.Empty and other queue exceptions
-            raise
-
-        # Detect sentinel; sentinel is picklable bytes
-        if item is _CLOSED_SENTINEL:
-            # ensure subsequent calls know the channel is closed
-            self._closed = True
-            raise EOFError("Channel closed")
-
-        return item
-
     @property
     def size(self) -> int:
         try:
@@ -156,20 +133,3 @@ class NormalChannel(Channel):
             return item
 
         return None
-
-    def close(self) -> None:
-        """Mark the channel as closed and insert a sentinel for waiting receivers."""
-        if self._closed:
-            return
-        self._closed = True
-        try:
-            self._queue.put_nowait(_CLOSED_SENTINEL)
-        except queue.Full:
-            pass
-        except Exception:
-            try:
-                log.exception(
-                    "NormalChannel.close: failed to insert sentinel for %s", self._name
-                )
-            except Exception:
-                pass

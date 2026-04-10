@@ -475,8 +475,12 @@ def __init__(self, name: str, maxsize: int = 0, cross_process: bool = False) -> 
 - `cross_process=False`：使用 `queue.Queue`，同一进程内线程间通信
 - `cross_process=True`：使用 `multiprocessing.Queue`，通过管道序列化消息实现跨进程
 - `send()`：非阻塞放入队列，队列满时返回 `False`
-- `recv()`：支持阻塞/非阻塞/超时三种模式
-- `close()`：插入哨兵对象通知等待的接收方
+- `recv()`：支持阻塞/非阻塞/超时三种模式，**始终返回 `None` 而非抛出异常**：
+  - 超时或队列为空 → 返回 `None`
+  - 检测到关闭哨兵 → 返回 `None`
+  - 跨进程管道关闭（`EOFError`/`OSError`）→ 记录日志后返回 `None`
+  - 其他意外错误 → 记录日志后返回 `None`
+- `close()`：插入可 pickle 的哨兵对象通知等待的接收方，先尝试非阻塞 put，失败则回退到短时阻塞 put；所有失败静默处理，通道逻辑上已关闭
 
 #### HighSpeedChannel
 

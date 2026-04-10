@@ -1,7 +1,4 @@
-import multiprocessing
-import threading
 import time
-import queue
 import pickle
 import asyncio
 
@@ -11,9 +8,7 @@ from framework.bus import MessageBus
 from framework.pool import ObjectPool
 from framework.registry import ComponentRegistry
 from framework.channels.normal import NormalChannel
-from framework.channels.highspeed import HighSpeedChannel
 from framework._test_helpers import (
-    BadInitComponent,
     LifecycleComponent,
 )
 from framework.channels.base import Message
@@ -119,8 +114,6 @@ class TestAsyncioBackendCancellation(unittest.TestCase):
 
         # import local helper for sleeping without importing asyncio in top-level
         def asyncio_sleep(delay):
-            import asyncio
-
             return asyncio.sleep(delay)
 
         bus.subscribe("a", coro)

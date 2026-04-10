@@ -8,20 +8,17 @@ import pickle
 import asyncio
 import logging
 
-from framework.channels.normal import NormalChannel, _CLOSED_SENTINEL
+from framework.channels.normal import NormalChannel
 from framework.pool import ObjectPool
 from framework.bus import (
     MessageBus,
-    ThreadBackend,
     ProcessBackend,
     AsyncioBackend,
     _process_dispatch,
     _process_component_cache,
-    _PROCESS_CACHE_MAX_ENTRIES,
 )
 from framework.channels.base import Message, ChannelType
 from framework.registry import ComponentRegistry
-import test_exec
 
 log = logging.getLogger("test_edge_cases")
 
@@ -114,7 +111,6 @@ def test_process_backend_caching_and_fallback(monkeypatch) -> None:
     }
 
     msg = Message(topic="t", payload={})
-    mb = Message(topic="t", payload={})
     msg_bytes = pickle.dumps(msg)
 
     # Run _process_dispatch multiple times to populate and evict

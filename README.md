@@ -20,10 +20,26 @@
 - Python 3.11+
 - 操作系统：支持mmap（Windows/Linux/macOS）
 
+### 交互式配置生成
+
+框架提供两个交互式 CLI 工具，帮助你快速上手：
+
+**生成配置文件**：
+```bash
+python generate_config.py
+```
+通过问答方式生成 `config.json`，支持 `--output` 指定输出路径，`--dry-run` 预览不写入。
+
+**生成组件骨架代码**：
+```bash
+python generate_component.py
+```
+通过问答生成 `BaseComponent` 子类 Python 文件及对应 JSON 配置片段，支持 `-d` 指定输出目录，`--dry-run` 预览。
+
 ### 运行Pipeline模式
 
 ```bash
-python main.py
+python test_config.py
 ```
 
 这将：
@@ -35,7 +51,7 @@ python main.py
 ### 运行UI演示
 
 ```bash
-python main.py  # UI模式
+python main.py
 ```
 
 启动Tkinter双屏通信演示应用。
@@ -43,8 +59,11 @@ python main.py  # UI模式
 ## 架构概览
 
 ```
-main.py                    → 入口点：加载配置，创建总线，注册组件
-config.json               → 组件定义 + 总线配置
+main.py                    → Tkinter UI 入口（双屏演示，非配置驱动）
+test_config.py             → 配置驱动管道：加载 config.json → 创建总线 + 组件
+generate_config.py         → 交互式 CLI：通过问答生成 config.json
+generate_component.py      → 交互式 CLI：生成 BaseComponent 子类代码 + JSON 配置片段
+config.json               → 组件定义 + 总线配置（由 config_loader 使用，main.py 不使用）
 framework/
   __init__.py             → 公共API导出
   interfaces.py           → BaseComponent ABC (含自动化生命周期管理)

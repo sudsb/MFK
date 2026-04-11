@@ -78,6 +78,213 @@ Component A                     MessageBus                      Component B
 
 ## 2. 快速开始
 
+### 交互式配置生成（推荐）
+
+框架提供两个 CLI 工具，可通过交互式问答自动生成配置文件和组件骨架代码，无需手动编写。
+
+**生成 `config.json`**：
+```bash
+python generate_config.py
+```
+交互式问答流程：
+1. 选择总线默认通道（normal / highspeed）
+2. 逐个添加组件：名称 → 类路径 → 参数（key=value）→ 订阅主题 → 发布主题
+3. 预览 JSON 并确认写入
+
+可选参数：
+- `--output PATH` / `-o PATH`：指定输出文件路径（默认 `config.json`）
+- `--dry-run`：仅打印 JSON 到终端，不写文件
+
+**生成组件骨架代码 + JSON 配置**：
+```bash
+python generate_component.py
+```
+交互式问答流程：
+1. 输入组件名（snake_case，自动生成 PascalCase 类名）
+2. 输入描述 → 订阅/发布主题 → 初始化参数
+3. 预览 Python 代码和 JSON 配置并确认写入
+
+可选参数：
+- `--output-dir PATH` / `-d PATH`：指定输出目录（默认 `features/`）
+- `--dry-run`：仅打印到终端，不写文件
+
+### 交互示例详解
+
+#### 示例 A：使用 `generate_config.py` 生成文件读写管道
+
+运行 `python generate_config.py` 后，终端会依次提示：
+
+```
+============================================================
+  MessageBus Framework - Configuration Generator
+============================================================
+
+Bus default_channel (normal, highspeed (default: highspeed)):
+```
+直接回车选择默认 `highspeed`。
+
+```
+Add components? [Y/n]:
+```
+输入 `y` 开始添加第一个组件：
+
+```
+--- New Component ---
+Component name (e.g., reader): reader
+Full class path (e.g., features.file_reader.FileReader): features.file_reader.FileReader
+  Enter parameters as key=value (one per line, empty line to finish):
+  param: path=sample.txt
+  param: output_key=file_content
+  param:
+Subscribe topics (comma-separated, e.g., file.read): file.read
+Publish topics (comma-separated, e.g., data.loaded): data.loaded
+
+  Component 'reader' added.
+Add another component? [y/N]:
+```
+输入 `y` 添加第二个组件：
+
+```
+--- New Component ---
+Component name (e.g., reader): printer
+Full class path (e.g., features.file_reader.FileReader): features.printer.ConsolePrinter
+  Enter parameters as key=value (one per line, empty line to finish):
+  param: input_key=file_content
+  param:
+Subscribe topics (comma-separated, e.g., file.read): data.loaded
+Publish topics (comma-separated, e.g., data.loaded):
+
+  Component 'printer' added.
+Add another component? [y/N]: n
+```
+输入 `n` 结束添加，预览生成的 JSON：
+
+```
+============================================================
+  Generated Configuration:
+============================================================
+{
+  "components": [
+    {
+      "name": "reader",
+      "class": "features.file_reader.FileReader",
+      "params": {
+        "path": "sample.txt",
+        "output_key": "file_content"
+      },
+      "subscribes": ["file.read"],
+      "publishes": ["data.loaded"]
+    },
+    {
+      "name": "printer",
+      "class": "features.printer.ConsolePrinter",
+      "params": {
+        "input_key": "file_content"
+      },
+      "subscribes": ["data.loaded"],
+      "publishes": []
+    }
+  ],
+  "bus": {
+    "default_channel": "highspeed"
+  }
+}
+============================================================
+Write to file? [Y/n]:
+```
+确认无误后回车，文件写入 `config.json`。
+
+**提示**：首次使用建议 `--dry-run` 预览输出，确认格式后再实际写入。
+
+#### 示例 B：使用 `generate_component.py` 生成数据处理组件
+
+运行 `python generate_component.py` 后：
+
+```
+============================================================
+  Component Generator for MessageBus Framework
+============================================================
+
+Component name (e.g. data_processor): data_filter
+Short description (e.g. Processes incoming data): Filters and transforms data streams
+Subscribe topics (comma-separated, empty for none): data.raw
+Publish topics (comma-separated, empty for none): data.filtered
+Init parameters (key=default pairs, one per line. 'None' = required, empty line to finish):
+  param> mode=None
+  param> threshold=0.5
+  param>
+Output directory (default: features):
+```
+参数说明：
+- `mode=None` — 必需参数，无默认值
+- `threshold=0.5` — 可选参数，默认 0.5
+
+确认后预览生成的 Python 代码：
+
+```python
+"""Filters and transforms data streams."""
+
+from __future__ import annotations
+
+from typing import Any
+
+from framework.channels.base import Message
+from framework.interfaces import BaseComponent
+
+
+class DataFilter(BaseComponent):
+    """Filters and transforms data streams."""
+
+    name: str = "data_filter"
+
+    def __init__(self, mode: Any, threshold: Any = 0.5, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.mode = mode
+        self.threshold = threshold
+
+    def on_start(self) -> None:
+        """Subscribe to topics."""
+        self._bus.subscribe("data.raw", self.handle_message)
+
+    def handle_message(self, message: Message) -> Any:
+        """Process incoming messages."""
+        payload = message.payload
+        # TODO: Implement message handling logic
+        # Publish to: "data.filtered"
+        pass
+
+    def on_stop(self) -> None:
+        """Cleanup resources."""
+        pass
+```
+
+以及对应的 JSON 配置片段：
+
+```json
+{
+  "name": "data_filter",
+  "class": "features.DataFilter",
+  "params": {
+    "mode": null,
+    "threshold": 0.5
+  },
+  "subscribes": [
+    "data.raw"
+  ],
+  "publishes": [
+    "data.filtered"
+  ]
+}
+```
+
+确认后将文件写入 `features/data_filter.py` 和 `features/data_filter_config.json`。
+
+**下一步**：将 JSON 片段中的内容合并到 `config.json` 的 `components` 数组中，然后运行 `python test_config.py` 即可接入管道。
+
+### 手动编写配置文件
+
+如果你更倾向于手动编辑 `config.json`，请参考下方格式说明。
+
 ### 最小运行示例
 
 **步骤 1**：创建 `config.json`

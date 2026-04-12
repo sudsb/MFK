@@ -9,13 +9,12 @@ if TYPE_CHECKING:
 
 
 class Screen1(BaseComponent):
-    """Screen 1 component. Registers with bus and participates in cross-screen communication."""
+    """Screen 1 component. Interested in navigation and data events."""
 
     name: str = "screen1"
 
-    def on_start(self) -> None:
-        self._bus.subscribe("ui.navigate_to_screen1", self.handle_message)
-        self._bus.subscribe("ui.screen1_data", self.handle_message)
+    capabilities: list[str] = []
+    interests = ["ui.navigate_to_screen1", "ui.screen1_data"]
 
     def handle_message(self, message: Message) -> Any:
         return {"received": message.topic, "payload": message.payload}

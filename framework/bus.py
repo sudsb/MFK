@@ -16,6 +16,7 @@ from typing import Any, Callable, Dict, List, Literal, Optional
 from .channels.base import Message, ChannelType
 from .channels.normal import NormalChannel
 from .channels.highspeed import HighSpeedChannel
+from .capabilities import CapabilityRegistry
 
 log = logging.getLogger(__name__)
 
@@ -259,6 +260,12 @@ class MessageBus:
       - ``"asyncio"``: handlers run on a shared event loop.  Coroutine
         handlers are awaited directly; synchronous handlers are dispatched
         via ``loop.run_in_executor``.
+
+    The ``thread_safe`` parameter controls locking in internal registries:
+      - ``True`` (default): Full thread-safety via RLock. Safe for concurrent
+        multi-threaded access.
+      - ``False``: No locking overhead. Use when only one module invokes
+        capabilities and registration is single-threaded (max performance).
     """
 
     def __init__(
@@ -266,6 +273,7 @@ class MessageBus:
         default_channel: ChannelType = ChannelType.HIGH_SPEED,
         delivery_mode: DeliveryMode = "thread",
         max_workers: int = 0,
+        thread_safe: bool = True,
     ) -> None:
         self._subscribers: Dict[str, List[Dict[str, Any]]] = {}
         self._channels: Dict[str, Any] = {}
@@ -273,6 +281,7 @@ class MessageBus:
         self._delivery_mode: DeliveryMode = delivery_mode
         self._lock = threading.RLock()
         self._components: Dict[str, Any] = {}
+        self._capabilities = CapabilityRegistry(thread_safe=thread_safe)
 
         # If configured for process delivery, ensure default channel is not HIGH_SPEED
         if (
@@ -389,6 +398,46 @@ class MessageBus:
             self._backend.dispatch(entry, message)
 
         return True
+
+    # ------------------------------------------------------------------
+    # Capability Management
+    # ------------------------------------------------------------------
+    def register_capability(self, name: str, handler: Callable) -> None:
+        """Register a capability provided by a component."""
+        self._capabilities.register(name, handler)
+
+    def unregister_capability(self, name: str, handler: Callable) -> None:
+        """Unregister a capability."""
+        self._capabilities.unregister(name, handler)
+
+    def invoke(self, capability: str, payload: Any = None) -> List[Any]:
+        """Invoke a capability. Wraps payload in Message for handler compatibility.
+
+        Returns results from all providers.
+        Returns empty list if no provider -- caller should not care.
+        """
+        log.debug("Invoking capability '%s'", capability)
+        # Wrap payload in a Message so handlers expecting Message objects work
+        message = Message(
+            topic=capability,
+            payload=payload,
+            sender="invoke",
+            channel_type=ChannelType.NORMAL,
+            ttl=0,
+        )
+        return self._capabilities.invoke(capability, message)
+
+    def emit(self, topic: str, payload: Any = None, sender: str = "") -> bool:
+        """Alias for publish -- emit an event to interested subscribers.
+
+        Returns True if anyone received it, False otherwise.
+        Caller should not care about the return value.
+        """
+        return self.publish(topic, payload, sender=sender)
+
+    def list_capabilities(self) -> List[str]:
+        """List all registered capability names."""
+        return self._capabilities.list_capabilities()
 
     # ------------------------------------------------------------------
     # Component registration

@@ -1,15 +1,17 @@
-# MessageBus Component Framework (v2.0)
+# MessageBus Component Framework (v2.1)
 
-一个基于通信的组件框架，组件通过MessageBus进行发布/订阅通信。框架事先不知道将连接哪些组件。
+一个基于通信的组件框架，组件通过MessageBus进行零耦合通信。组件只需声明"能做什么"和"关心什么"，不需要知道对方的存在。
 
 ## 特性
 
 - **纯Python标准库** - 无外部依赖
+- **零耦合架构** - 组件互不感知，通过能力和事件通信
 - **动态组件发现** - 运行时注册组件
 - **多种通信通道** - 支持高性能和跨进程通信
 - **性能优化层** - 对象池、参数缓存、状态快照
 - **跨进程支持** - 进程隔离和线程安全
 - **策略化交付后端** - 线程/进程/异步三种投递模式
+- **双模式注册表** - `thread_safe=True`（默认，线程安全）和 `thread_safe=False`（无锁，高性能），通过 `_locked()` 上下文管理器同一份代码自动切换
 - **健壮的错误处理** - 全面的异常捕获和日志记录
 - **自动化生命周期管理** - 组件注册/注销自动处理
 
@@ -127,23 +129,23 @@ bus.subscribe("topic", handler, handler_info={
       "params": {
         "path": "sample.txt",
         "output_key": "file_content"
-      },
-      "subscribes": ["file.read"],
-      "publishes": ["data.loaded"]
+      }
     },
     {
       "name": "printer",
       "class": "features.printer.ConsolePrinter",
       "params": {
         "input_key": "file_content"
-      },
-      "subscribes": ["data.loaded"]
+      }
     }
   ],
   "bus": {
     "default_channel": "highspeed"
   }
 }
+```
+
+**注意**：组件的 `capabilities` 和 `interests` 在代码中声明，配置文件中只需指定实例化哪些组件和参数。
 ```
 
 ### 通道类型
@@ -160,42 +162,58 @@ bus.subscribe("topic", handler, handler_info={
 
 ### 基本组件
 
-继承 `BaseComponent`，实现 `handle_message(message: Message) -> Any`：
+继承 `BaseComponent`，声明 `capabilities` 和 `interests`，实现 `handle_message(message: Message) -> Any`：
 
 ```python
 from framework.interfaces import BaseComponent
 from framework.channels.base import Message
 
-class MyComponent(BaseComponent):
-    name: str = "my_component"
+class FileReader(BaseComponent):
+    name: str = "file_reader"
+
+    # 声明式：我能做什么，我关心什么
+    capabilities = ["file.read"]   # 我提供读取文件的能力
+    interests = []                 # 我不关心任何事件
 
     def __init__(self, **params):
         super().__init__(**params)
-        self.my_param = params.get("my_param", "default")
-
-    def on_start(self):
-        # 组件被注册到总线时（attach_bus）自动调用
-        self._bus.subscribe("my.topic", self.handle_message)
+        self.path = params.get("path", "sample.txt")
 
     def handle_message(self, message: Message):
-        # 处理消息
-        data = message.payload
-        # 处理逻辑...
-        return {"result": "processed_data"}
+        # 读取文件
+        with open(self.path) as f:
+            content = f.read()
+        # 发出事件，不关心谁接收
+        self._bus.emit("data.loaded", {"content": content}, sender=self.name)
+        return {"content": content}
+
+class ConsolePrinter(BaseComponent):
+    name: str = "console_printer"
+
+    capabilities = []              # 我不提供任何能力
+    interests = ["data.loaded"]    # 我关心数据加载完成事件
+
+    def handle_message(self, message: Message):
+        print(message.payload)
+        return {"printed": True}
+```
+
+### 调用能力和发出事件
+
+```python
+# 调用能力 - 不关心谁提供
+results = self._bus.invoke("file.read", payload={"path": "data.txt"})
+
+# 发出事件 - 不关心谁接收
+self._bus.emit("data.loaded", {"key": "value"}, sender=self.name)
 ```
 
 ### 生命周期钩子
 
-- `on_start()` - 框架在 `attach_bus` 时**自动调用**，用于订阅主题或初始化逻辑。此时 `self._bus` 已确认可用。
+- `on_start()` - 框架在 `attach_bus` 时**自动调用**，用于初始化逻辑。此时 `capabilities` 和 `interests` 已自动注册/订阅。
 - `on_stop()` - 框架在 `detach_bus` 时**自动调用**，用于清理资源。
-- `attach_bus(bus)` - 框架调用，分配总线并触发 `on_start`。
-- `detach_bus()` - 框架调用，触发 `on_stop` 并断开总线。
-
-### 发布消息
-
-```python
-self._bus.publish("topic.name", payload={"key": "value"}, sender=self.name)
-```
+- `attach_bus(bus)` - 框架调用，自动注册 capabilities、订阅 interests，然后触发 `on_start`。
+- `detach_bus()` - 框架调用，触发 `on_stop`，然后取消注册 capabilities、取消订阅 interests。
 
 ## 性能特性
 
@@ -256,6 +274,8 @@ self._bus.publish("topic.name", payload={"key": "value"}, sender=self.name)
 ## 稳定性说明
 
 - **UI线程安全**: 不要从总线处理器直接调用Tkinter方法
+- **并发安全**: `CapabilityRegistry` 和 `ComponentRegistry` 通过 `_locked()` 上下文管理器实现双模式：默认 `thread_safe=True`（`RLock` 保护，线程安全）和 `thread_safe=False`（无锁，高性能）。`MessageBus` 订阅表和组件字典也有锁保护
+- **无锁模式**: 单线程场景可通过 `MessageBus(thread_safe=False)` 获得 ~5-15% 性能提升（详见 `examples/lock_free_example.py`）
 - **进程模式**: `subscribe()` 需要 `handler_info` 用于子进程组件重建
 - **组件验证**: `registry.create()` 通过importlib实例化，确保类路径正确且 `__init__` 参数可序列化
 - **交付后端配置**: 使用 `delivery_mode` 参数选择线程/进程/异步模式

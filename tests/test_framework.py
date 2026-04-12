@@ -127,10 +127,13 @@ class TestAsyncioBackendCancellation(unittest.TestCase):
 
 class TestHighSpeedChannelWithProcessMode(unittest.TestCase):
     def test_highspeed_fallback_to_normal_when_process_mode(self):
-        bus = MessageBus(delivery_mode="process", default_channel=1)  # HIGH_SPEED
-        # get_channel should have fallen back to NormalChannel
-        ch = bus.get_channel("topic1", channel_type=1)
         from framework.channels.base import ChannelType
+
+        bus = MessageBus(
+            delivery_mode="process", default_channel=ChannelType.HIGH_SPEED
+        )
+        # get_channel should have fallen back to NormalChannel
+        ch = bus.get_channel("topic1", channel_type=ChannelType.HIGH_SPEED)
 
         self.assertEqual(ch.channel_type, ChannelType.NORMAL)
         # ensure resources cleaned up

@@ -3,15 +3,12 @@
     {
       "name": "reader",
       "class": "features.file_reader.FileReader",
-      "params": { "path": "sample.txt", "output_key": "file_content" },
-      "subscribes": ["file.read"],
-      "publishes": ["data.loaded"]
+      "params": { "path": "sample.txt", "output_key": "file_content" }
     },
     {
       "name": "printer",
       "class": "features.printer.ConsolePrinter",
-      "params": { "input_key": "file_content" },
-      "subscribes": ["data.loaded"]
+      "params": { "input_key": "file_content" }
     }
   ],
   "bus": {

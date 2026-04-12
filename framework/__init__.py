@@ -7,6 +7,7 @@ The framework does NOT know what components will connect in advance.
 from .interfaces import BaseComponent
 from .bus import MessageBus
 from .registry import ComponentRegistry
+from .capabilities import CapabilityRegistry
 from .channels.base import Channel, Message, ChannelType
 from .channels.normal import NormalChannel
 from .channels.highspeed import HighSpeedChannel
@@ -19,6 +20,7 @@ __all__ = [
     "BaseComponent",
     "MessageBus",
     "ComponentRegistry",
+    "CapabilityRegistry",
     # Channels
     "Channel",
     "ChannelType",

@@ -17,19 +17,22 @@ class BadInitComponent(BaseComponent):
 
 
 class LifecycleComponent(BaseComponent):
-    """Component that subscribes on start and records lifecycle events."""
+    """Component that records lifecycle events. Uses interests for auto-subscribe."""
 
     name: str = "lifecycle"
+
+    capabilities: list[str] = []
+    # Note: topic is set dynamically in __init__, interests updated there too
+    interests: list[str] = []
 
     def __init__(self, record: list, topic: str = "test.topic", **params):
         super().__init__(**params)
         self.record = record
         self.topic = topic
+        # Dynamically set interests based on topic
+        self.interests = [topic]
 
     def on_start(self) -> None:
-        # subscribe to a topic so we receive messages when attached
-        if self._bus is not None:
-            self._bus.subscribe(self.topic, self.handle_message)
         self.record.append("started")
 
     def on_stop(self) -> None:

@@ -1,3 +1,5 @@
+"""Config-driven pipeline: loads config.json, creates bus + components, runs pipeline."""
+
 import time
 from framework.bus import MessageBus
 from framework.config_loader import load_framework_config
@@ -13,6 +15,10 @@ for comp_cfg in bus_cfg["components_cfg"]:
         bus.register_component(comp)
         components.append(comp)
 
-bus.publish("file.read", payload={})
+# Invoke the file.read capability -- we don't care who provides it
+results = bus.invoke("file.read", payload={})
+print(f"Invocation results: {results}")
+
+# Wait for async handlers and event propagation
 time.sleep(1)
 bus.shutdown()

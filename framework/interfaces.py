@@ -1,6 +1,6 @@
 from __future__ import annotations
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 import threading
 
 if TYPE_CHECKING:
@@ -13,9 +13,20 @@ class BaseComponent(ABC):
 
     Components register with the bus, subscribe to topics, and process messages.
     The framework does NOT know what components will connect in advance.
+
+    Zero-coupling design:
+    - capabilities: what this component can do (auto-registered on attach)
+    - interests: what events this component cares about (auto-subscribed on attach)
+    Components do NOT need to know about each other.
     """
 
     name: str = "unnamed"
+
+    # === Declarative capabilities and interests ===
+    # Capabilities this component provides (auto-registered to CapabilityRegistry)
+    capabilities: List[str] = []
+    # Events this component is interested in (auto-subscribed on attach)
+    interests: List[str] = []
 
     def __init__(self, **params: Any) -> None:
         self.params: Dict[str, Any] = params
@@ -27,14 +38,34 @@ class BaseComponent(ABC):
         self._lock = threading.RLock()
 
     def attach_bus(self, bus: MessageBus) -> None:
-        """Called by framework to give component access to the message bus."""
+        """Called by framework to give component access to the message bus.
+
+        Automatically registers capabilities and subscribes to interests.
+        """
         self._bus = bus
         self._running = True
+
+        # Auto-register capabilities
+        for cap in self.capabilities:
+            bus.register_capability(cap, self.handle_message)
+
+        # Auto-subscribe to interests
+        for topic in self.interests:
+            bus.subscribe(topic, self.handle_message)
+
         self.on_start()
 
     def detach_bus(self) -> None:
-        """Called by framework to disconnect."""
+        """Called by framework to disconnect.
+
+        Automatically unregisters capabilities and unsubscribes from interests.
+        """
         self.on_stop()
+        if self._bus:
+            for cap in self.capabilities:
+                self._bus.unregister_capability(cap, self.handle_message)
+            for topic in self.interests:
+                self._bus.unsubscribe(topic, self.handle_message)
         self._running = False
         self._bus = None
 

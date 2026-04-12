@@ -12,15 +12,16 @@
   - [3.5 ObjectPool](#35-objectpool)
   - [3.6 ParamCache](#36-paramcache)
   - [3.7 SnapshotManager](#37-snapshotmanager)
-  - [3.8 config_loader](#38-config_loader)
-- [4. 完整示例](#4-完整示例)
-  - [示例1：基础发布/订阅](#示例1基础发布订阅)
-  - [示例2：对象池 + 缓存](#示例2对象池--缓存)
-  - [示例3：快照恢复](#示例3状态快照与恢复)
-  - [示例4：双通道混合使用](#示例4双通道混合使用)
-  - [示例5：自定义文件处理组件](#示例5自定义组件--文件处理器)
-  - [示例6：三种投递后端对比](#示例6三种投递后端对比)
-- [5. 框架优势与局限性](#5-框架优势与局限性)
+   - [3.8 config_loader](#38-config_loader)
+ - [4. 完整示例](#4-完整示例)
+   - [示例1：基础发布/订阅](#示例1基础发布订阅)
+   - [示例2：对象池 + 缓存](#示例2对象池--缓存)
+   - [示例3：快照恢复](#示例3状态快照与恢复)
+   - [示例4：双通道混合使用](#示例4双通道混合使用)
+   - [示例5：自定义文件处理组件](#示例5自定义组件--文件处理器)
+   - [示例6：三种投递后端对比](#示例6三种投递后端对比)
+   - [示例7：无锁高性能模式](#示例7无锁高性能模式)
+ - [5. 框架优势与局限性](#5-框架优势与局限性)
 
 ---
 
@@ -28,10 +29,11 @@
 
 ### 通信模型
 
-本框架采用 **发布/订阅（Publish/Subscribe）通信模型**。组件之间不直接调用，而是通过 `MessageBus` 进行解耦通信。框架在设计时 **不知道也不关心** 会有哪些组件接入。
+本框架采用 **零耦合事件驱动架构**。组件之间不直接调用，也不需要知道对方的存在。组件只需声明自己"能做什么"（capabilities）和"关心什么"（interests），框架自动处理路由和匹配。
 
-- 组件通过 `publish(topic, payload)` 向指定主题发送消息
-- 组件通过 `subscribe(topic, handler)` 订阅感兴趣的主题
+- 组件通过 `capabilities` 声明提供的功能，其他组件通过 `bus.invoke("capability", payload)` 调用，**不关心谁提供**
+- 组件通过 `interests` 声明感兴趣的事件，其他组件通过 `bus.emit("event", payload)` 发出，**不关心谁接收**
+- 无人响应是正常行为，不会报错或警告
 - 消息通过 `Channel` 传输，支持两种通道：普通通道（NormalChannel）和高速通道（HighSpeedChannel）
 - 每个处理器在独立的守护线程中执行，不会阻塞发布者
 
@@ -63,16 +65,25 @@
 ### 数据流向
 
 ```
-Component A                     MessageBus                      Component B
-    │                              │                                │
-    │── publish("topic", data) ──▶│                                │
-    │                              │── 创建 Message 对象 ──▶        │
-    │                              │── 写入 Channel ──▶             │
-    │                              │── 启动线程投递 ──▶             │
-    │                              │                                │── handle_message(msg)
-    │                              │                                │── 处理并返回结果
-    │◀─────────────────────────────│◀───────────────────────────────│
+调用方                            MessageBus                         提供方
+  |                                 |                                   |
+  |-- invoke("file.read") --------->|                                   |
+  |                                 |-- 查找 capabilities ------------->|
+  |                                 |-- 调用 handle_message ----------->|
+  |                                 |<-- 返回结果 ----------------------|
+  |<-- 返回结果 --------------------|                                   |
+  |                                 |                                   |
+  |-- emit("data.loaded") --------->|                                   |
+  |                                 |-- 查找 interests ---------------->|
+  |                                 |-- 通知 handle_message ----------->|
+  |                                 |                                   |
 ```
+
+**关键设计**：
+- 调用方不知道谁提供了 `file.read` 能力
+- 提供方不知道谁会调用 `file.read`
+- 发布者不知道谁关心 `data.loaded` 事件
+- 订阅者不知道谁发布了 `data.loaded`
 
 ---
 
@@ -101,7 +112,7 @@ python generate_component.py
 ```
 交互式问答流程：
 1. 输入组件名（snake_case，自动生成 PascalCase 类名）
-2. 输入描述 → 订阅/发布主题 → 初始化参数
+2. 输入描述 → 能力（capabilities）→ 兴趣（interests）→ 初始化参数
 3. 预览 Python 代码和 JSON 配置并确认写入
 
 可选参数：
@@ -295,15 +306,12 @@ class DataFilter(BaseComponent):
     {
       "name": "reader",
       "class": "features.file_reader.FileReader",
-      "params": { "path": "sample.txt", "output_key": "file_content" },
-      "subscribes": ["file.read"],
-      "publishes": ["data.loaded"]
+      "params": { "path": "sample.txt", "output_key": "file_content" }
     },
     {
       "name": "printer",
       "class": "features.printer.ConsolePrinter",
-      "params": { "input_key": "file_content" },
-      "subscribes": ["data.loaded"]
+      "params": { "input_key": "file_content" }
     }
   ],
   "bus": {
@@ -331,7 +339,7 @@ def main():
     # 创建总线
     bus = MessageBus(default_channel=bus_config["default_channel"])
 
-    # 实例化并注册组件
+    # 实例化并注册组件（框架自动注册 capabilities 和 interests）
     components = []
     for comp_cfg in config["components_cfg"]:
         comp = registry.create(comp_cfg["name"], **comp_cfg.get("params", {}))
@@ -339,8 +347,9 @@ def main():
             bus.register_component(comp)
             components.append(comp)
 
-    # 触发第一个组件
-    bus.publish("file.read", payload={"trigger": True}, sender="main")
+    # 调用 file.read 能力 -- 不关心谁提供
+    results = bus.invoke("file.read", payload={})
+    print(f"Results: {results}")
 
     # 等待消息处理
     import time
@@ -367,10 +376,10 @@ python main.py
 | `components[].name` | `string` | 是 | 组件唯一标识名 |
 | `components[].class` | `string` | 是 | 类路径，格式 `"模块.类名"` |
 | `components[].params` | `object` | 否 | 传递给组件构造函数的参数 |
-| `components[].subscribes` | `array[string]` | 否 | 订阅的主题列表（仅文档用途，组件需在 `on_start` 中自行订阅） |
-| `components[].publishes` | `array[string]` | 否 | 发布的主题列表（仅文档用途） |
 | `bus` | `object` | 否 | 总线配置 |
 | `bus.default_channel` | `string` | 否 | 默认通道类型：`"highspeed"` 或 `"normal"`，默认 `"highspeed"` |
+
+**注意**：组件的 `capabilities` 和 `interests` 在代码中声明，不在配置文件中。配置文件只指定"实例化哪些组件"和"传入什么参数"。
 
 ---
 
@@ -387,6 +396,8 @@ python main.py
 | 属性 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
 | `name` | `str` | `"unnamed"` | 组件名称，子类应重写 |
+| `capabilities` | `list[str]` | `[]` | 组件提供的能力列表（框架自动注册） |
+| `interests` | `list[str]` | `[]` | 组件感兴趣的事件列表（框架自动订阅） |
 
 #### 构造方法
 
@@ -413,13 +424,21 @@ def __init__(self, **params: Any) -> None
 |------|------|------|
 | `bus` | `MessageBus` | 要附加的消息总线实例 |
 
-行为：设置 `self._bus = bus`，`self._running = True`。
+行为：
+1. 设置 `self._bus = bus`，`self._running = True`
+2. 自动将 `capabilities` 中的每个能力注册到总线
+3. 自动订阅 `interests` 中的每个事件
+4. 调用 `on_start()` 钩子
 
 ##### `detach_bus() -> None`
 
 由框架调用，断开组件与总线的连接。
 
-行为：设置 `self._running = False`，`self._bus = None`。
+行为：
+1. 调用 `on_stop()` 钩子
+2. 自动取消注册所有 `capabilities`
+3. 自动取消订阅所有 `interests`
+4. 设置 `self._running = False`，`self._bus = None`
 
 ##### `handle_message(message: Message) -> Any` *(抽象方法)*
 
@@ -452,11 +471,36 @@ def __init__(self, **params: Any) -> None
 #### 自定义组件实现规范
 
 1. 继承 `BaseComponent`，设置 `name` 类属性
-2. 在 `__init__` 中调用 `super().__init__(**params)`，然后提取自有参数
-3. 在 `on_start` 中通过 `self._bus.subscribe()` 订阅主题
+2. 声明 `capabilities`（我能做什么）和 `interests`（我关心什么事件）
+3. 在 `__init__` 中调用 `super().__init__(**params)`，然后提取自有参数
 4. 实现 `handle_message` 处理逻辑
-5. 需要发布消息时通过 `self._bus.publish()` 发送
-6. 在 `on_stop` 中清理资源
+5. 需要调用其他能力时使用 `self._bus.invoke("capability", payload)`
+6. 需要发出事件时使用 `self._bus.emit("event", payload, sender=self.name)`
+7. 在 `on_stop` 中清理资源
+
+**示例**：
+```python
+class FileReader(BaseComponent):
+    name = "file_reader"
+    capabilities = ["file.read"]  # 我提供读取文件的能力
+    interests = []                # 我不关心任何事件
+
+    def handle_message(self, message: Message) -> Any:
+        # 读取文件...
+        content = open(path).read()
+        # 发出事件通知感兴趣的组件
+        self._bus.emit("data.loaded", {"content": content}, sender=self.name)
+        return {"content": content}
+
+class Printer(BaseComponent):
+    name = "printer"
+    capabilities = []             # 我不提供任何能力
+    interests = ["data.loaded"]   # 我关心数据加载完成事件
+
+    def handle_message(self, message: Message) -> Any:
+        print(message.payload)
+        return {"printed": True}
+```
 
 ---
 
@@ -474,6 +518,7 @@ def __init__(
     default_channel: ChannelType = ChannelType.HIGH_SPEED,
     delivery_mode: str = "thread",
     max_workers: int = 0,
+    thread_safe: bool = True,
 ) -> None
 ```
 
@@ -482,6 +527,7 @@ def __init__(
 | `default_channel` | `ChannelType` | `ChannelType.HIGH_SPEED` | 未指定通道类型时使用的默认通道 |
 | `delivery_mode` | `str` | `"thread"` | 消息投递后端：`"thread"` / `"process"` / `"asyncio"` |
 | `max_workers` | `int` | `0`（自动 = CPU 核数） | 线程池/进程池的最大工作进程数 |
+| `thread_safe` | `bool` | `True` | **是否启用线程安全模式**（详见下方双模式说明） |
 
 **投递后端详解**：
 
@@ -490,6 +536,34 @@ def __init__(
 | `"thread"` | `ThreadPoolExecutor` + 守护线程 | I/O 密集型任务，最常用 | 受 GIL 限制，CPU 密集任务不会真正并行 |
 | `"process"` | `multiprocessing.Pool` 子进程 | CPU 密集型任务，需要进程隔离 | 组件必须可通过 `module + class_name + params` 在子进程中重新实例化；订阅时需传 `handler_info` |
 | `"asyncio"` | 独立事件循环线程 + `run_coroutine_threadsafe` | 异步原生组件，大量并发 I/O | 异步 handler（`async def`）直接 await；同步 handler 通过 `run_in_executor` 执行 |
+
+**双模式设计（thread_safe 参数）**：
+
+框架提供两种注册表模式，通过 `_locked()` 上下文管理器实现同一份代码自动切换，零 if/else 分支：
+
+| 模式 | 参数值 | 内部实现 | 适用场景 | 性能 |
+|------|--------|---------|---------|------|
+| **线程安全** | `thread_safe=True`（默认） | `threading.RLock` 保护所有方法 | 多线程并发访问、多模块调用 capability | 基准 |
+| **无锁高性能** | `thread_safe=False` | 无锁，`_locked()` 变为空操作 | 单线程配置驱动、单一模块调用、初始化阶段 | 提升 ~5-15% |
+
+**无锁模式适用场景**：
+- 配置驱动的管道（如 `test_config.py`），所有注册和调用在主线程完成
+- 单一模块独占使用 MessageBus，无其他线程并发访问
+- 追求极致性能的初始化阶段
+
+**无锁模式不适用场景**：
+- 多个线程同时 `invoke` 同一 capability
+- 动态注册/注销组件与并发 `invoke` 同时进行
+- UI 线程与工作线程共用同一总线
+
+**示例**：
+```python
+# 线程安全模式（默认，推荐大多数场景）
+bus = MessageBus()
+
+# 无锁高性能模式（单线程场景）
+bus = MessageBus(thread_safe=False)
+```
 
 内部状态：
 - `self._subscribers: Dict[str, List[Dict]]` — 主题到处理器条目列表
@@ -569,7 +643,10 @@ def __init__(
 
 行为：
 - 使用 `component.name` 作为键存储（若无 `name` 则用 `id(component)`）
-- 自动调用 `component.attach_bus(self)`
+- 自动调用 `component.attach_bus(self)`，这会：
+  - 注册组件声明的 `capabilities`
+  - 订阅组件声明的 `interests`
+  - 调用 `component.on_start()`
 
 ##### `unregister_component(name) -> None`
 
@@ -579,7 +656,63 @@ def __init__(
 |------|------|------|
 | `name` | `str` | 组件名称 |
 
-行为：从组件字典移除，并调用 `component.detach_bus()`。
+行为：从组件字典移除，并调用 `component.detach_bus()`，这会：
+- 调用 `component.on_stop()`
+- 取消注册所有 `capabilities`
+- 取消订阅所有 `interests`
+
+##### `invoke(capability, payload=None) -> List[Any]`
+
+调用一个能力。返回所有提供者的结果列表。
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `capability` | `str` | — | 能力名称 |
+| `payload` | `Any` | `None` | 传递给能力的参数（会被包装为 Message 对象） |
+
+**返回值**：所有提供者返回结果的列表。如果没有提供者，返回空列表 `[]`。
+
+**线程安全**：`invoke` 在调用时会获取能力注册表的锁，获取处理器列表的快照后释放锁，然后在锁外依次调用每个处理器。这确保了即使在并发注册/注销的场景下也不会出现数据竞争或迭代错误。
+
+行为：
+1. 将 `payload` 包装为 `Message` 对象
+2. 查找所有注册了该能力的处理器（线程安全快照）
+3. 依次调用每个处理器，收集返回值
+4. 异常处理器不会影响其他处理器的执行
+
+##### `emit(topic, payload=None, sender="") -> bool`
+
+发出事件。`publish` 的语义化别名。
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `topic` | `str` | — | 事件名称 |
+| `payload` | `Any` | `None` | 事件数据 |
+| `sender` | `str` | `""` | 发送者标识 |
+
+**返回值**：`True` 表示有订阅者，`False` 表示没有。调用方通常不应关心此返回值。
+
+##### `register_capability(name, handler) -> None`
+
+注册一个能力（通常由框架通过 `attach_bus` 自动调用）。
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `name` | `str` | 能力名称 |
+| `handler` | `Callable` | 处理函数 |
+
+##### `unregister_capability(name, handler) -> None`
+
+取消注册一个能力（通常由框架通过 `detach_bus` 自动调用）。
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `name` | `str` | 能力名称 |
+| `handler` | `Callable` | 处理函数 |
+
+##### `list_capabilities() -> List[str]`
+
+列出所有已注册的能力名称。
 
 ##### `get_channel(topic, channel_type) -> Any`
 
@@ -759,15 +892,24 @@ def __init__(self, name: str, slot_count: int = 64, slot_size: int = 1024) -> No
 
 管理组件的生命周期：注册、实例化、发现。
 
+**双模式**：通过 `_locked()` 上下文管理器实现同一份代码自动切换：
+- `thread_safe=True`（默认）：`threading.RLock` 保护所有方法，支持多线程并发访问
+- `thread_safe=False`：无锁模式，`_locked()` 变为空操作，提升 ~5-15% 性能
+
 #### 构造方法
 
 ```python
-def __init__(self) -> None
+def __init__(self, thread_safe: bool = True) -> None
 ```
 
-无参数。内部维护两个字典：
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `thread_safe` | `bool` | `True` | 是否启用线程安全模式 |
+
+内部维护两个字典：
 - `self._components: Dict[str, BaseComponent]` — 已创建的实例
 - `self._class_paths: Dict[str, str]` — 名称到类路径的映射
+- `self._lock: Optional[threading.RLock]` — 可选锁，`thread_safe=False` 时为 `None`
 
 #### 方法
 
@@ -845,6 +987,54 @@ def __init__(self) -> None
 | 实例化时机 | 调用 `create()` 时 | 注册前已实例化 |
 | 参数传递 | `create()` 时传入 | 构造时已确定 |
 | 适用场景 | 配置文件驱动、延迟加载 | 手动构建、需要自定义初始化 |
+
+---
+
+### 3.4.5 CapabilityRegistry
+
+**文件**：`framework/capabilities.py`
+
+管理能力的注册、注销和调用。
+
+**双模式**：通过 `_locked()` 上下文管理器实现同一份代码自动切换：
+- `thread_safe=True`（默认）：`threading.RLock` 保护所有方法，支持多线程并发访问
+- `thread_safe=False`：无锁模式，`_locked()` 变为空操作，提升 ~5-15% 性能
+
+#### 构造方法
+
+```python
+def __init__(self, thread_safe: bool = True) -> None
+```
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `thread_safe` | `bool` | `True` | 是否启用线程安全模式 |
+
+#### 方法
+
+##### `register(name, handler) -> None`
+
+注册一个能力。允许多个提供者（都会调用）。
+
+##### `unregister(name, handler) -> None`
+
+注销一个能力提供者。使用 `_same_handler` 比较器处理绑定方法身份问题。
+
+##### `invoke(name, payload) -> List[Any]`
+
+调用一个能力。返回所有提供者的结果列表。
+
+**线程安全模式**：在锁内获取 handler 快照，在锁外依次调用，避免在 handler 执行期间持锁。
+
+**无锁模式**：直接读取 handler 列表并调用（单线程保证安全）。
+
+##### `has_provider(name) -> bool`
+
+检查是否存在提供者。
+
+##### `list_capabilities() -> List[str]`
+
+列出所有已注册的能力名称。
 
 ---
 
@@ -1886,6 +2076,74 @@ if __name__ == "__main__":
 
 ---
 
+### 示例 7：无锁高性能模式
+
+当只有一个模块调用能力且注册发生在单线程时（如配置驱动管道），可以禁用锁以获得 ~5-15% 的性能提升。
+
+```python
+"""示例7：无锁高性能模式"""
+import time
+from framework.bus import MessageBus
+from framework.channels.base import ChannelType, Message
+from framework.interfaces import BaseComponent
+from typing import Any
+
+
+class FastProcessor(BaseComponent):
+    """高速处理组件。"""
+
+    name = "fast_processor"
+    capabilities = ["fast.process"]
+    interests = []
+
+    def __init__(self, **params):
+        super().__init__(**params)
+        self.count = 0
+
+    def handle_message(self, message: Message) -> Any:
+        self.count += 1
+        return {"processed": self.count}
+
+
+def main():
+    # 无锁模式：适用于单线程场景
+    bus = MessageBus(
+        default_channel=ChannelType.NORMAL,
+        thread_safe=False,  # 禁用注册表锁
+    )
+
+    processor = FastProcessor()
+    bus.register_component(processor)
+
+    # 高频调用 -- 无锁开销
+    start = time.perf_counter()
+    for _ in range(10_000):
+        bus.invoke("fast.process", {})
+    elapsed = time.perf_counter() - start
+
+    print(f"处理 10000 次调用耗时: {elapsed:.4f}s")
+    print(f"实际处理: {processor.count} 次")
+
+    bus.shutdown()
+
+
+if __name__ == "__main__":
+    main()
+```
+
+**完整运行示例**：
+```bash
+python examples/lock_free_example.py
+```
+
+该示例包含：
+- 无锁 MessageBus 管道
+- 无锁 ComponentRegistry 快速初始化
+- 无锁 CapabilityRegistry 直接使用
+- 线程安全 vs 无锁模式性能对比
+
+---
+
 ## 5. 框架优势与局限性
 
 ### 优势
@@ -1896,7 +2154,12 @@ if __name__ == "__main__":
 4. **组件完全解耦** — 发布/订阅模型，组件不知道彼此的存在，框架也不知道哪些组件会接入
 5. **性能层内置** — ObjectPool（实例复用，支持 teardown）、ParamCache（同参缓存，O(1) LRU）、SnapshotManager（中断恢复）开箱即用
 6. **动态组件加载** — 通过 `importlib` 从配置字符串路径动态实例化，无需硬编码
-7. **线程安全设计** — 所有共享状态有锁保护，UI 调用通过 `after()` 编组到主线程
+7. **线程安全设计** — 所有共享状态有锁保护：
+   - `CapabilityRegistry`（能力注册表）使用 `RLock` 保护 register/unregister/invoke，支持高并发调用
+   - `ComponentRegistry`（组件注册表）使用 `RLock` 保护 register_instance/register_class/create/unregister
+   - `MessageBus` 订阅表和组件字典使用 `RLock` 保护
+   - `ThreadBackend` 检测到组件实例的 `_lock` 属性时自动序列化对同一实例的并发调用
+   - UI 调用通过 `after()` 编组到主线程
 8. **健壮的错误处理** — 全面的异常捕获和日志记录，单个处理器异常不影响其他处理器
 9. **自动化生命周期管理** — 组件注册/注销时自动调用 `attach_bus`/`detach_bus`，确保资源正确清理
 10. **进程模式组件缓存** — 子进程中使用 LRU 缓存复用组件实例，避免重复实例化开销

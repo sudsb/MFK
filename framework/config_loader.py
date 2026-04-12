@@ -7,7 +7,7 @@ from .channels.base import ChannelType
 log = logging.getLogger(__name__)
 
 
-def load_framework_config(config_path: str) -> Dict[str, Any]:
+def load_framework_config(config_path: str, thread_safe: bool = True) -> Dict[str, Any]:
     """Load framework configuration from JSON.
 
     Expected config structure:
@@ -16,15 +16,20 @@ def load_framework_config(config_path: str) -> Dict[str, Any]:
         {
           "name": "reader",
           "class": "features.file_reader.FileReader",
-          "params": {"path": "sample.txt", "output_key": "file_content"},
-          "subscribes": ["file.read"],
-          "publishes": ["data.loaded"]
+          "params": {"path": "sample.txt", "output_key": "file_content"}
         }
       ],
       "bus": {
         "default_channel": "highspeed"
       }
     }
+
+    Note: Components declare capabilities and interests in code, not in config.
+    The config only specifies which components to instantiate and their params.
+
+    The ``thread_safe`` parameter controls locking in ComponentRegistry:
+      - ``True`` (default): Full thread-safety via RLock.
+      - ``False``: No locking overhead for maximum performance.
 
     Returns dict with 'registry', 'components', 'bus_config'.
 

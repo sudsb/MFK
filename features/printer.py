@@ -10,24 +10,22 @@ log = logging.getLogger(__name__)
 class ConsolePrinter(BaseComponent):
     """Subscribes to data events and prints content to console.
 
-    Subscribes to 'data.loaded' topic.
-
-    Params:
-      - input_key: key in payload to print (default: 'file_content')
+    Interested in 'data.loaded' events -- I don't care who emits them.
     """
 
     name: str = "console_printer"
+
+    # I don't provide any capabilities
+    capabilities: list[str] = []
+    # I'm interested in this event, I don't care who emits it
+    interests = ["data.loaded"]
 
     def __init__(self, **params: Any) -> None:
         super().__init__(**params)
         self.input_key: str = params.get("input_key", "file_content")
 
-    def on_start(self) -> None:
-        """Subscribe to data.loaded topic."""
-        self._bus.subscribe("data.loaded", self.handle_message)
-
     def handle_message(self, message: Message) -> Any:
-        """Print the payload content."""
+        """Handle 'data.loaded' event."""
         try:
             if isinstance(message.payload, dict):
                 value = message.payload.get(self.input_key, "")

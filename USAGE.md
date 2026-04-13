@@ -2155,10 +2155,11 @@ python examples/lock_free_example.py
 5. **性能层内置** — ObjectPool（实例复用，支持 teardown）、ParamCache（同参缓存，O(1) LRU）、SnapshotManager（中断恢复）开箱即用
 6. **动态组件加载** — 通过 `importlib` 从配置字符串路径动态实例化，无需硬编码
 7. **线程安全设计** — 所有共享状态有锁保护：
-   - `CapabilityRegistry`（能力注册表）使用 `RLock` 保护 register/unregister/invoke，支持高并发调用
-   - `ComponentRegistry`（组件注册表）使用 `RLock` 保护 register_instance/register_class/create/unregister
+   - `CapabilityRegistry`（能力注册表）使用 `_locked()` contextmanager 自动切换线程安全/无锁模式
+   - `ComponentRegistry`（组件注册表）使用 `_locked()` contextmanager 自动切换线程安全/无锁模式
    - `MessageBus` 订阅表和组件字典使用 `RLock` 保护
    - `ThreadBackend` 检测到组件实例的 `_lock` 属性时自动序列化对同一实例的并发调用
+   - `ObjectPool` 使用 `RLock` + `Condition` 实现精确的超时等待（基于 `time.monotonic`）
    - UI 调用通过 `after()` 编组到主线程
 8. **健壮的错误处理** — 全面的异常捕获和日志记录，单个处理器异常不影响其他处理器
 9. **自动化生命周期管理** — 组件注册/注销时自动调用 `attach_bus`/`detach_bus`，确保资源正确清理

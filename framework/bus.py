@@ -215,13 +215,26 @@ class AsyncioBackend(DeliveryBackend):
         handler = entry["handler"]
         try:
             if asyncio.iscoroutinefunction(handler):
-                asyncio.run_coroutine_threadsafe(handler(message), self._event_loop)
+                # _safe_coro_handler logs exceptions internally
+                asyncio.run_coroutine_threadsafe(
+                    self._safe_coro_handler(handler, message), self._event_loop
+                )
             else:
                 self._event_loop.run_in_executor(
                     None, ThreadBackend._deliver_message, handler, message
                 )
         except Exception:
             log.exception("AsyncioBackend: scheduling handler failed")
+
+    @staticmethod
+    async def _safe_coro_handler(
+        handler: Callable[[Message], Any], message: Message
+    ) -> None:
+        """Wrap coroutine execution with exception logging."""
+        try:
+            await handler(message)
+        except Exception:
+            log.exception("AsyncioBackend: coroutine handler failed")
 
     def shutdown(self) -> None:
         try:

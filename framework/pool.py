@@ -1,5 +1,6 @@
 from __future__ import annotations
 import threading
+import time
 import logging
 from typing import Any, Callable
 from collections import deque
@@ -61,26 +62,47 @@ class ObjectPool:
                 return instance
 
             # Otherwise wait for release up to timeout
-            waited = self._cond.wait(timeout=timeout)
-            if not waited and not self._pool:
-                raise TimeoutError(f"ObjectPool '{self._name}' acquire timed out")
+            deadline = time.monotonic() + timeout if timeout is not None else None
+            while True:
+                if deadline is not None:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError(
+                            f"ObjectPool '{self._name}' acquire timed out"
+                        )
+                    self._cond.wait(timeout=remaining)
+                else:
+                    self._cond.wait()
 
-            # We have been notified and should have an instance
-            if self._pool:
-                instance = self._pool.popleft()
-                self._in_use += 1
-                self._in_use_set.add(id(instance))
-                return instance
+                if self._pool:
+                    instance = self._pool.popleft()
+                    self._in_use += 1
+                    self._in_use_set.add(id(instance))
+                    return instance
 
-            # Fallback: try to create one more if allowed
-            if self._max_size <= 0 or self._total_created < self._max_size:
-                instance = self._factory()
-                self._total_created += 1
-                self._in_use += 1
-                self._in_use_set.add(id(instance))
-                return instance
+                # Spurious wakeup or pool still empty -- try creating one
+                if self._max_size <= 0 or self._total_created < self._max_size:
+                    instance = self._factory()
+                    self._total_created += 1
+                    self._in_use += 1
+                    self._in_use_set.add(id(instance))
+                    return instance
 
-            raise TimeoutError(f"ObjectPool '{self._name}' acquire timed out")
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise TimeoutError(f"ObjectPool '{self._name}' acquire timed out")
+
+    def _teardown_instance(self, instance: Any) -> None:
+        """Clean up an instance that is being discarded. Caller must hold _lock."""
+        self._total_created = max(0, self._total_created - 1)
+        try:
+            if self._teardown:
+                self._teardown(instance)
+            elif hasattr(instance, "close"):
+                instance.close()
+            elif hasattr(instance, "shutdown"):
+                instance.shutdown()
+        except Exception:
+            log.exception("Pool '%s': error during instance teardown", self._name)
 
     def release(self, instance: Any) -> None:
         if instance is None:
@@ -97,29 +119,13 @@ class ObjectPool:
             if self._max_size <= 0 or len(self._pool) < self._max_size:
                 self._pool.append(instance)
                 # Notify one waiter that an instance is available
-                try:
-                    with self._cond:
-                        self._cond.notify(1)
-                except Exception:
-                    pass
+                self._cond.notify(1)
             else:
                 log.debug(
                     "Pool '%s': pool full (%d), discarding instance",
-                    self._name,
                     self._max_size,
                 )
-                # Attempt to clean up the discarded instance if it exposes cleanup
-                try:
-                    if self._teardown:
-                        self._teardown(instance)
-                    elif hasattr(instance, "close"):
-                        instance.close()
-                    elif hasattr(instance, "shutdown"):
-                        instance.shutdown()
-                except Exception:
-                    log.exception(
-                        "Pool '%s': error during instance teardown", self._name
-                    )
+                self._teardown_instance(instance)
 
     @property
     def size(self) -> int:
@@ -137,15 +143,7 @@ class ObjectPool:
             while len(self._pool) > target_size:
                 inst = self._pool.pop()
                 removed += 1
-                try:
-                    if self._teardown:
-                        self._teardown(inst)
-                    elif hasattr(inst, "close"):
-                        inst.close()
-                    elif hasattr(inst, "shutdown"):
-                        inst.shutdown()
-                except Exception:
-                    log.exception("Pool '%s': error during shrink teardown", self._name)
+                self._teardown_instance(inst)
         return removed
 
     def clear(self) -> None:
@@ -153,12 +151,4 @@ class ObjectPool:
             # Clean up instances before clearing to avoid resource leaks
             while self._pool:
                 inst = self._pool.pop()
-                try:
-                    if self._teardown:
-                        self._teardown(inst)
-                    elif hasattr(inst, "close"):
-                        inst.close()
-                    elif hasattr(inst, "shutdown"):
-                        inst.shutdown()
-                except Exception:
-                    log.exception("Pool '%s': error during clear teardown", self._name)
+                self._teardown_instance(inst)

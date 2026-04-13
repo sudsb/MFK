@@ -20,13 +20,13 @@ _UINT32_FMT = "<I"
 
 
 class HighSpeedChannel(Channel):
-    """Lock-free ring buffer channel using shared memory (mmap).
+    """Ring buffer channel using shared memory (mmap) for low-latency communication.
 
     Provides high-throughput, low-latency message passing via a pre-allocated
     ring buffer. Each slot stores a pickled Message with a 4-byte length prefix.
 
-    Thread-safe via the GIL for single-slot operations; a minimal ``threading.Lock``
-    protects multi-byte head/tail reads and struct writes.
+    Thread-safe via a lightweight ``threading.Lock`` protecting multi-byte
+    head/tail reads and struct writes. Same-process only.
     """
 
     def __init__(self, name: str, slot_count: int = 64, slot_size: int = 1024) -> None:

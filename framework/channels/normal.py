@@ -125,7 +125,7 @@ class NormalChannel(Channel):
                 pass
             return None
 
-        if item is _CLOSED_SENTINEL:
+        if item == _CLOSED_SENTINEL:
             self._closed = True
             return None
 
